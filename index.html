@@ -322,7 +322,7 @@
     <div id="results-body"><div class="state-msg">Loading results…</div></div>
   </section>
 
-  <footer class="note" id="footer-note">Live data via <a href="https://www.football-data.org" target="_blank" rel="noopener" style="color:inherit">football-data.org</a>, club badges via <a href="https://www.thesportsdb.com" target="_blank" rel="noopener" style="color:inherit">TheSportsDB</a>. Free-tier rate limits apply — if something fails to load, wait a minute and hit refresh.</footer>
+  <footer class="note" id="footer-note">Live data via <a href="https://www.football-data.org" target="_blank" rel="noopener" style="color:inherit">football-data.org</a>, club badges via <a href="https://en.wikipedia.org" target="_blank" rel="noopener" style="color:inherit">Wikipedia</a>. Free-tier rate limits apply — if something fails to load, wait a minute and hit refresh.</footer>
 </div>
 
 <script>
@@ -354,36 +354,61 @@
     return `hsl(${h % 360},58%,40%)`;
   }
 
-  // ---- Real club badges via TheSportsDB (free, no key needed beyond the public test key) ----
-  // Best-effort: if this fails for any reason, badge() just falls back to the colored letter chip.
+  // ---- Real club badges via Wikipedia's own image API (free, uncapped, no key) ----
+  // Renders the colored letter chip immediately, then swaps in each club's Wikipedia
+  // page image (almost always its crest) once resolved. Fails silently per-club.
   function normalizeTeamName(s){
     return String(s||'').toLowerCase().replace(/\bafc\b|\bfc\b/g,'').replace(/[^a-z0-9]/g,'');
   }
-  let BADGE_MAP = {};
-  let badgeMapPromise = null;
-  function loadBadgeMap(){
-    if(!badgeMapPromise){
-      badgeMapPromise = fetch('https://www.thesportsdb.com/api/v1/json/123/search_all_teams.php?l=English_Premier_League')
-        .then(r => r.ok ? r.json() : Promise.reject())
-        .then(data=>{
-          const map = {};
-          (data && data.teams || []).forEach(t=>{
-            const url = t.strTeamBadge || t.strBadge || t.strTeamLogo;
-            if(url) map[normalizeTeamName(t.strTeam)] = url;
-          });
-          BADGE_MAP = map;
-        })
-        .catch(()=>{ BADGE_MAP = {}; });
-    }
-    return badgeMapPromise;
+  const WIKI_CACHE = {};   // normalized name -> image url or null
+  const WIKI_INFLIGHT = {}; // normalized name -> promise
+  const TEAMS_SEEN = new Map(); // normalized name -> display name
+
+  function fetchWikiCrest(name){
+    const key = normalizeTeamName(name);
+    if(key in WIKI_CACHE) return Promise.resolve(WIKI_CACHE[key]);
+    if(WIKI_INFLIGHT[key]) return WIKI_INFLIGHT[key];
+    const q = encodeURIComponent(name + " football club");
+    const url = `https://en.wikipedia.org/w/api.php?action=query&generator=search&gsrsearch=${q}&gsrlimit=1&prop=pageimages&pithumbsize=120&format=json&origin=*`;
+    WIKI_INFLIGHT[key] = fetch(url)
+      .then(r => r.ok ? r.json() : Promise.reject())
+      .then(data => {
+        const pages = data?.query?.pages;
+        const page = pages ? Object.values(pages)[0] : null;
+        const src = page?.thumbnail?.source || null;
+        WIKI_CACHE[key] = src;
+        return src;
+      })
+      .catch(() => { WIKI_CACHE[key] = null; return null; })
+      .finally(() => { delete WIKI_INFLIGHT[key]; });
+    return WIKI_INFLIGHT[key];
+  }
+
+  function enhanceBadges(){
+    TEAMS_SEEN.forEach((displayName, key) => {
+      fetchWikiCrest(displayName).then(url=>{
+        if(!url) return;
+        document.querySelectorAll(`.badge[data-team-key="${key}"]`).forEach(el=>{
+          if(el.querySelector('img')) return;
+          const fb = el.querySelector('.badge-fallback');
+          const img = document.createElement('img');
+          img.src = url; img.loading = 'lazy'; img.alt = fb ? fb.textContent : '';
+          img.onerror = () => { img.remove(); if(fb) fb.style.display = 'flex'; };
+          el.prepend(img);
+          if(fb) fb.style.display = 'none';
+        });
+      });
+    });
   }
 
   function badge(team){
     const name = team.name || team.shortName || team.tla || "Team";
+    const key = normalizeTeamName(name);
+    TEAMS_SEEN.set(key, name);
     const fallback = esc(team.tla || (team.shortName || name).slice(0,3).toUpperCase());
-    const mapped = BADGE_MAP[normalizeTeamName(name)];
-    const crest = mapped ? esc(mapped) : (team.crest ? esc(team.crest) : "");
-    return `<div class="badge" style="background:${hashColor(name)}">
+    const cached = WIKI_CACHE[key];
+    const crest = cached ? esc(cached) : (team.crest ? esc(team.crest) : "");
+    return `<div class="badge" data-team-key="${key}" style="background:${hashColor(name)}">
         ${crest ? `<img src="${crest}" alt="${fallback}" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">` : ''}
         <span class="badge-fallback" style="display:${crest ? 'none' : 'flex'}">${fallback}</span>
       </div>`;
@@ -544,9 +569,10 @@
     const tbody = document.getElementById('table-body');
     tbody.innerHTML = `<div class="state-msg">Loading standings…</div>`;
     try{
-      const [data] = await Promise.all([ fd('/competitions/PL/standings'), loadBadgeMap() ]);
+      const data = await fd('/competitions/PL/standings');
       const total = (data.standings || []).find(s => s.type === 'TOTAL');
       renderStandings(total ? total.table : [], data.season);
+      enhanceBadges();
       document.getElementById('table-updated').innerHTML =
         `Updated ${new Date().toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'})}<button class="refresh-btn" id="refresh-table">refresh</button>`;
       document.getElementById('refresh-table').addEventListener('click', loadStandings);
@@ -570,8 +596,9 @@
     fbody.innerHTML = `<div class="state-msg">Loading fixtures…</div>`;
     rbody.innerHTML = `<div class="state-msg">Loading results…</div>`;
     try{
-      const [data] = await Promise.all([ fd('/competitions/PL/matches'), loadBadgeMap() ]);
+      const data = await fd('/competitions/PL/matches');
       renderMatches(data.matches || []);
+      enhanceBadges();
     }catch(err){
       if(isNetworkBlock(err)){
         renderMatches(FALLBACK_MATCHES);

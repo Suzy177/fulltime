@@ -193,15 +193,25 @@
     color:#fff;
   }
   .team{
-    display:flex;align-items:center;gap:8px;
+    display:flex;align-items:center;justify-content:space-between;gap:6px;
     min-width:0;
   }
   .team span{
     overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
     font-weight:600;
+    flex:1;min-width:0;
   }
   .stat{text-align:center;color:var(--text-dim);}
   .pts{text-align:center;font-weight:800;color:var(--text);}
+  .trow.is-fav{background:var(--surface-2);}
+  .star-btn{
+    background:none;border:0;padding:2px;flex-shrink:0;
+    font-size:15px;line-height:1;color:var(--text-dim);cursor:pointer;
+  }
+  .star-btn.active{color:var(--gold);}
+  .pinned-wrap{margin-bottom:12px;}
+  .pinned-wrap[hidden]{display:none;}
+  .pinned-card .mid{min-width:64px;}
   .legend{
     display:flex;gap:14px;flex-wrap:wrap;
     padding:12px 4px 4px;
@@ -298,6 +308,7 @@
 <div class="wrap">
 
   <section class="panel" id="panel-table">
+    <div class="pinned-wrap" id="pinned-teams" hidden></div>
     <div class="meta-line"><span>Standings</span><span id="table-updated">Loading…<button class="refresh-btn" id="refresh-table">refresh</button></span></div>
     <div class="row-table">
       <div class="col-heads">
@@ -472,6 +483,38 @@
   const FALLBACK_NAMES = Object.fromEntries(FALLBACK_STANDINGS.map(e=>[e.team.tla, e.team.name]));
   FALLBACK_MATCHES.forEach(m=>{ m.homeTeam.name = FALLBACK_NAMES[m.homeTeam.tla]; m.awayTeam.name = FALLBACK_NAMES[m.awayTeam.tla]; });
 
+  // ---- Favorite teams (remembered on this device via localStorage) ----
+  let FAVORITES = new Set();
+  try{ FAVORITES = new Set(JSON.parse(localStorage.getItem('fulltime_favorites') || '[]')); }catch(e){}
+  function saveFavorites(){
+    try{ localStorage.setItem('fulltime_favorites', JSON.stringify([...FAVORITES])); }catch(e){}
+  }
+  let LAST_STANDINGS = null; // {rows, season} — cached so toggling a favorite can re-render without refetching
+
+  function renderPinned(rows){
+    const el = document.getElementById('pinned-teams');
+    const favRows = rows.filter(r => FAVORITES.has(normalizeTeamName(r.team.name)));
+    if(!favRows.length){ el.hidden = true; el.innerHTML = ''; return; }
+    el.hidden = false;
+    el.innerHTML = `<div class="day-label">Your teams</div>` + favRows.map(entry=>{
+      const key = normalizeTeamName(entry.team.name);
+      return `<div class="match-card pinned-card">
+          <div class="side home">${badge(entry.team)}<span>${esc(entry.team.name)}</span></div>
+          <div class="mid"><div class="kickoff num">#${entry.position} · ${entry.points} pts</div></div>
+          <button class="star-btn active" data-team-key="${key}" aria-label="Remove ${esc(entry.team.name)} from favorites">★</button>
+        </div>`;
+    }).join('');
+  }
+
+  document.body.addEventListener('click', (e)=>{
+    const btn = e.target.closest('.star-btn');
+    if(!btn) return;
+    const key = btn.dataset.teamKey;
+    if(FAVORITES.has(key)) FAVORITES.delete(key); else FAVORITES.add(key);
+    saveFavorites();
+    if(LAST_STANDINGS) renderStandings(LAST_STANDINGS.rows, LAST_STANDINGS.season);
+  });
+
   function isNetworkBlock(err){
     return err instanceof TypeError; // "Failed to fetch" — the sandbox refused the request outright
   }
@@ -481,6 +524,7 @@
   }
 
   function renderStandings(rows, season){
+    LAST_STANDINGS = { rows, season };
     const startYr = season?.startDate ? season.startDate.slice(2,4) : '';
     const endYr = season?.endDate ? season.endDate.slice(2,4) : '';
     document.getElementById('season-label').textContent =
@@ -489,15 +533,20 @@
     tbody.innerHTML = '';
     rows.forEach(entry=>{
       const pos = entry.position;
+      const key = normalizeTeamName(entry.team.name);
+      const isFav = FAVORITES.has(key);
       let zone = "";
       if(pos<=4) zone="zone-ucl"; else if(pos===5) zone="zone-uel"; else if(pos>=18) zone="zone-rel";
       const gd = entry.goalDifference;
       const gdStr = gd>0 ? `+${gd}` : gd;
       tbody.insertAdjacentHTML('beforeend', `
-        <div class="trow ${zone}">
+        <div class="trow ${zone} ${isFav ? 'is-fav' : ''}">
           <div class="pos num">${pos}</div>
           ${badge(entry.team)}
-          <div class="team"><span>${esc(entry.team.name)}</span></div>
+          <div class="team">
+            <span>${esc(entry.team.name)}</span>
+            <button class="star-btn ${isFav ? 'active' : ''}" data-team-key="${key}" aria-label="${isFav ? 'Remove' : 'Add'} ${esc(entry.team.name)} ${isFav ? 'from' : 'to'} favorites">${isFav ? '★' : '☆'}</button>
+          </div>
           <div class="stat num">${entry.playedGames}</div>
           <div class="stat num">${entry.won}</div>
           <div class="stat num">${entry.draw}</div>
@@ -506,6 +555,8 @@
           <div class="pts num">${entry.points}</div>
         </div>`);
     });
+    renderPinned(rows);
+    enhanceBadges();
   }
 
   function renderMatches(matches){
@@ -569,7 +620,6 @@
       const data = await fd('/competitions/PL/standings');
       const total = (data.standings || []).find(s => s.type === 'TOTAL');
       renderStandings(total ? total.table : [], data.season);
-      enhanceBadges();
       document.getElementById('table-updated').innerHTML =
         `Updated ${new Date().toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'})}<button class="refresh-btn" id="refresh-table">refresh</button>`;
       document.getElementById('refresh-table').addEventListener('click', loadStandings);

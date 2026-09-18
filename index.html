@@ -322,7 +322,7 @@
     <div id="results-body"><div class="state-msg">Loading results…</div></div>
   </section>
 
-  <footer class="note" id="footer-note">Live data via <a href="https://www.football-data.org" target="_blank" rel="noopener" style="color:inherit">football-data.org</a>. Free-tier rate limits apply — if something fails to load, wait a minute and hit refresh.</footer>
+  <footer class="note" id="footer-note">Live data via <a href="https://www.football-data.org" target="_blank" rel="noopener" style="color:inherit">football-data.org</a>, club badges via <a href="https://www.thesportsdb.com" target="_blank" rel="noopener" style="color:inherit">TheSportsDB</a>. Free-tier rate limits apply — if something fails to load, wait a minute and hit refresh.</footer>
 </div>
 
 <script>
@@ -353,10 +353,36 @@
     for(let i=0;i<str.length;i++){ h = (h*31 + str.charCodeAt(i)) >>> 0; }
     return `hsl(${h % 360},58%,40%)`;
   }
+
+  // ---- Real club badges via TheSportsDB (free, no key needed beyond the public test key) ----
+  // Best-effort: if this fails for any reason, badge() just falls back to the colored letter chip.
+  function normalizeTeamName(s){
+    return String(s||'').toLowerCase().replace(/\bafc\b|\bfc\b/g,'').replace(/[^a-z0-9]/g,'');
+  }
+  let BADGE_MAP = {};
+  let badgeMapPromise = null;
+  function loadBadgeMap(){
+    if(!badgeMapPromise){
+      badgeMapPromise = fetch('https://www.thesportsdb.com/api/v1/json/123/search_all_teams.php?l=English_Premier_League')
+        .then(r => r.ok ? r.json() : Promise.reject())
+        .then(data=>{
+          const map = {};
+          (data && data.teams || []).forEach(t=>{
+            const url = t.strTeamBadge || t.strBadge || t.strTeamLogo;
+            if(url) map[normalizeTeamName(t.strTeam)] = url;
+          });
+          BADGE_MAP = map;
+        })
+        .catch(()=>{ BADGE_MAP = {}; });
+    }
+    return badgeMapPromise;
+  }
+
   function badge(team){
     const name = team.name || team.shortName || team.tla || "Team";
     const fallback = esc(team.tla || (team.shortName || name).slice(0,3).toUpperCase());
-    const crest = team.crest ? esc(team.crest) : "";
+    const mapped = BADGE_MAP[normalizeTeamName(name)];
+    const crest = mapped ? esc(mapped) : (team.crest ? esc(team.crest) : "");
     return `<div class="badge" style="background:${hashColor(name)}">
         ${crest ? `<img src="${crest}" alt="${fallback}" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">` : ''}
         <span class="badge-fallback" style="display:${crest ? 'none' : 'flex'}">${fallback}</span>
@@ -518,7 +544,7 @@
     const tbody = document.getElementById('table-body');
     tbody.innerHTML = `<div class="state-msg">Loading standings…</div>`;
     try{
-      const data = await fd('/competitions/PL/standings');
+      const [data] = await Promise.all([ fd('/competitions/PL/standings'), loadBadgeMap() ]);
       const total = (data.standings || []).find(s => s.type === 'TOTAL');
       renderStandings(total ? total.table : [], data.season);
       document.getElementById('table-updated').innerHTML =
@@ -544,7 +570,7 @@
     fbody.innerHTML = `<div class="state-msg">Loading fixtures…</div>`;
     rbody.innerHTML = `<div class="state-msg">Loading results…</div>`;
     try{
-      const data = await fd('/competitions/PL/matches');
+      const [data] = await Promise.all([ fd('/competitions/PL/matches'), loadBadgeMap() ]);
       renderMatches(data.matches || []);
     }catch(err){
       if(isNetworkBlock(err)){

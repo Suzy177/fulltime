@@ -212,6 +212,25 @@
   .pinned-wrap{margin-bottom:12px;}
   .pinned-wrap[hidden]{display:none;}
   .pinned-card .mid{min-width:64px;}
+  .team-link{cursor:pointer;}
+  .team-link:hover{text-decoration:underline;}
+
+  .back-btn{
+    border:0;background:none;color:var(--accent);
+    font-family:'Manrope',sans-serif;font-weight:700;font-size:13px;
+    cursor:pointer;padding:4px 0;margin-bottom:10px;
+  }
+  .team-header-top{
+    display:flex;align-items:center;gap:12px;
+    padding:6px 2px 14px;
+  }
+  .team-header-top .badge{width:44px;height:44px;border-radius:12px;font-size:14px;}
+  .team-header-info{flex:1;min-width:0;}
+  .team-header-info h2{font-size:22px;line-height:1.1;}
+  .team-header-sub{
+    display:block;font-size:11.5px;color:var(--text-dim);margin-top:4px;
+    font-variant-numeric:tabular-nums;
+  }
   .legend{
     display:flex;gap:14px;flex-wrap:wrap;
     padding:12px 4px 4px;
@@ -333,6 +352,13 @@
     <div id="results-body"><div class="state-msg">Loading results…</div></div>
   </section>
 
+  <section class="panel" id="panel-team" hidden>
+    <button class="back-btn" id="team-back">&larr; Back</button>
+    <div id="team-header"></div>
+    <div class="meta-line"><span>All matches</span><span></span></div>
+    <div id="team-matches"></div>
+  </section>
+
   <footer class="note" id="footer-note">Live data via <a href="https://www.football-data.org" target="_blank" rel="noopener" style="color:inherit">football-data.org</a>, club badges via <a href="https://en.wikipedia.org" target="_blank" rel="noopener" style="color:inherit">Wikipedia</a>. Free-tier rate limits apply — if something fails to load, wait a minute and hit refresh.</footer>
 </div>
 
@@ -416,7 +442,7 @@
     const fallback = esc(team.tla || (team.shortName || name).slice(0,3).toUpperCase());
     const cached = WIKI_CACHE[key];
     const crest = cached ? esc(cached) : (team.crest ? esc(team.crest) : "");
-    return `<div class="badge" data-team-key="${key}" style="background:${hashColor(name)}">
+    return `<div class="badge team-link" data-team-key="${key}" data-team-name="${esc(name)}" style="background:${hashColor(name)}">
         ${crest ? `<img src="${crest}" alt="${fallback}" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">` : ''}
         <span class="badge-fallback" style="display:${crest ? 'none' : 'flex'}">${fallback}</span>
       </div>`;
@@ -499,7 +525,7 @@
     el.innerHTML = `<div class="day-label">Your teams</div>` + favRows.map(entry=>{
       const key = normalizeTeamName(entry.team.name);
       return `<div class="match-card pinned-card">
-          <div class="side home">${badge(entry.team)}<span>${esc(entry.team.name)}</span></div>
+          <div class="side home">${badge(entry.team)}<span class="team-link" data-team-name="${esc(entry.team.name)}">${esc(entry.team.name)}</span></div>
           <div class="mid"><div class="kickoff num">#${entry.position} · ${entry.points} pts</div></div>
           <button class="star-btn active" data-team-key="${key}" aria-label="Remove ${esc(entry.team.name)} from favorites">★</button>
         </div>`;
@@ -508,11 +534,78 @@
 
   document.body.addEventListener('click', (e)=>{
     const btn = e.target.closest('.star-btn');
-    if(!btn) return;
-    const key = btn.dataset.teamKey;
-    if(FAVORITES.has(key)) FAVORITES.delete(key); else FAVORITES.add(key);
-    saveFavorites();
-    if(LAST_STANDINGS) renderStandings(LAST_STANDINGS.rows, LAST_STANDINGS.season);
+    if(btn){
+      const key = btn.dataset.teamKey;
+      if(FAVORITES.has(key)) FAVORITES.delete(key); else FAVORITES.add(key);
+      saveFavorites();
+      if(LAST_STANDINGS) renderStandings(LAST_STANDINGS.rows, LAST_STANDINGS.season);
+      return;
+    }
+    const link = e.target.closest('.team-link');
+    if(link) openTeamPage(link.dataset.teamName);
+  });
+
+  // ---- Team detail page ----
+  let ALL_MATCHES = [];
+  let lastActiveTab = 'table';
+
+  function openTeamPage(name){
+    const key = normalizeTeamName(name);
+    const activeBtn = document.querySelector('.tab-btn.active');
+    if(activeBtn) lastActiveTab = activeBtn.dataset.tab;
+    ['table','fixtures','results'].forEach(t => document.getElementById('panel-'+t).hidden = true);
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('panel-team').hidden = false;
+
+    const standingsRow = LAST_STANDINGS?.rows.find(r => normalizeTeamName(r.team.name) === key);
+    const team = standingsRow?.team || { name, tla: null, crest: null };
+    const isFav = FAVORITES.has(key);
+
+    document.getElementById('team-header').innerHTML = `
+      <div class="team-header-top">
+        ${badge(team)}
+        <div class="team-header-info">
+          <h2>${esc(team.name)}</h2>
+          ${standingsRow ? `<span class="team-header-sub">#${standingsRow.position} · ${standingsRow.points} pts · ${standingsRow.playedGames}P ${standingsRow.won}W ${standingsRow.draw}D ${standingsRow.lost}L</span>` : `<span class="team-header-sub">Standings not loaded yet</span>`}
+        </div>
+        <button class="star-btn" style="font-size:20px" data-team-key="${key}">${isFav ? '★' : '☆'}</button>
+      </div>`;
+    document.querySelector('#team-header .star-btn').classList.toggle('active', isFav);
+
+    const teamMatches = ALL_MATCHES
+      .filter(m => normalizeTeamName(m.homeTeam.name) === key || normalizeTeamName(m.awayTeam.name) === key)
+      .sort((a,b) => new Date(a.utcDate) - new Date(b.utcDate));
+
+    const body = document.getElementById('team-matches');
+    body.innerHTML = '';
+    groupByDay(teamMatches).forEach(group=>{
+      const div = document.createElement('div');
+      div.className = 'day-group';
+      div.innerHTML = `<div class="day-label">${group.label}</div>`;
+      group.matches.forEach(m=>{
+        const finished = m.status === 'FINISHED';
+        const hs = m.score?.fullTime?.home ?? '–';
+        const as = m.score?.fullTime?.away ?? '–';
+        div.insertAdjacentHTML('beforeend', `
+          <div class="match-card ${finished ? 'result-card' : ''}">
+            <div class="result-top">
+              <div class="side home">${badge(m.homeTeam)}<span class="team-link" data-team-name="${esc(m.homeTeam.name)}">${esc(m.homeTeam.name)}</span></div>
+              <div class="mid">${finished ? `<div class="score num">${hs}&ndash;${as}</div>` : `<div class="kickoff num">${fmtTime(m.utcDate)}</div>`}</div>
+              <div class="side away">${badge(m.awayTeam)}<span class="team-link" data-team-name="${esc(m.awayTeam.name)}">${esc(m.awayTeam.name)}</span></div>
+            </div>
+          </div>`);
+      });
+      body.appendChild(div);
+    });
+    if(!teamMatches.length) body.innerHTML = `<div class="state-msg">No match data loaded yet — try the Table or Fixtures tab first.</div>`;
+    enhanceBadges();
+    window.scrollTo(0,0);
+  }
+
+  document.getElementById('team-back').addEventListener('click', ()=>{
+    document.getElementById('panel-team').hidden = true;
+    document.getElementById('panel-'+lastActiveTab).hidden = false;
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === lastActiveTab));
   });
 
   function isNetworkBlock(err){
@@ -544,7 +637,7 @@
           <div class="pos num">${pos}</div>
           ${badge(entry.team)}
           <div class="team">
-            <span>${esc(entry.team.name)}</span>
+            <span class="team-link" data-team-name="${esc(entry.team.name)}">${esc(entry.team.name)}</span>
             <button class="star-btn ${isFav ? 'active' : ''}" data-team-key="${key}" aria-label="${isFav ? 'Remove' : 'Add'} ${esc(entry.team.name)} ${isFav ? 'from' : 'to'} favorites">${isFav ? '★' : '☆'}</button>
           </div>
           <div class="stat num">${entry.playedGames}</div>
@@ -582,9 +675,9 @@
       group.matches.forEach(m=>{
         div.insertAdjacentHTML('beforeend', `
           <div class="match-card">
-            <div class="side home">${badge(m.homeTeam)}<span>${esc(m.homeTeam.name)}</span></div>
+            <div class="side home">${badge(m.homeTeam)}<span class="team-link" data-team-name="${esc(m.homeTeam.name)}">${esc(m.homeTeam.name)}</span></div>
             <div class="mid"><div class="kickoff num">${fmtTime(m.utcDate)}</div></div>
-            <div class="side away">${badge(m.awayTeam)}<span>${esc(m.awayTeam.name)}</span></div>
+            <div class="side away">${badge(m.awayTeam)}<span class="team-link" data-team-name="${esc(m.awayTeam.name)}">${esc(m.awayTeam.name)}</span></div>
           </div>`);
       });
       fbody.appendChild(div);
@@ -602,9 +695,9 @@
         div.insertAdjacentHTML('beforeend', `
           <div class="match-card result-card">
             <div class="result-top">
-              <div class="side home">${badge(m.homeTeam)}<span>${esc(m.homeTeam.name)}</span></div>
+              <div class="side home">${badge(m.homeTeam)}<span class="team-link" data-team-name="${esc(m.homeTeam.name)}">${esc(m.homeTeam.name)}</span></div>
               <div class="mid"><div class="score num">${hs}&ndash;${as}</div></div>
-              <div class="side away">${badge(m.awayTeam)}<span>${esc(m.awayTeam.name)}</span></div>
+              <div class="side away">${badge(m.awayTeam)}<span class="team-link" data-team-name="${esc(m.awayTeam.name)}">${esc(m.awayTeam.name)}</span></div>
             </div>
           </div>`);
       });
@@ -644,10 +737,12 @@
     rbody.innerHTML = `<div class="state-msg">Loading results…</div>`;
     try{
       const data = await fd('/competitions/PL/matches');
-      renderMatches(data.matches || []);
+      ALL_MATCHES = data.matches || [];
+      renderMatches(ALL_MATCHES);
       enhanceBadges();
     }catch(err){
       if(isNetworkBlock(err)){
+        ALL_MATCHES = FALLBACK_MATCHES;
         renderMatches(FALLBACK_MATCHES);
         showDemoBanner();
       } else {

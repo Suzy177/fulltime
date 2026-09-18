@@ -326,16 +326,13 @@
 </div>
 
 <script>
-  // ---- Live data via football-data.org (free tier) ----
-  // Heads up: this key is visible to anyone who views this page's source.
-  // That's fine for a personal project — worst case, regenerate it at football-data.org.
-  const API_TOKEN = "21c465036d154a44b705639d74ac9a41";
-  const API_BASE = "https://api.football-data.org/v4";
+  // ---- Live data via football-data.org, through our own Cloudflare Worker proxy ----
+  // The Worker holds the API key server-side (never shipped in this page) and adds
+  // the CORS header football-data.org doesn't send for this domain.
+  const API_BASE = "https://fulltime-proxy.susee-bee16.workers.dev";
 
   async function fd(path){
-    const res = await fetch(API_BASE + path, {
-      headers: { "X-Auth-Token": API_TOKEN }
-    });
+    const res = await fetch(API_BASE + path);
     if(!res.ok){
       if(res.status === 429) throw new Error("Rate limit hit (free tier allows 10 requests/minute) — wait a minute and refresh.");
       if(res.status === 403) throw new Error("That token isn't authorized for this data yet — check it's a valid free-tier key.");
